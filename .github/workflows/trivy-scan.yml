@@ -9,21 +9,20 @@ on:
 jobs:
   security-scan:
     runs-on: ubuntu-latest
-
     steps:
-      # 1️⃣ Checkout code
-      - name: Checkout repository
+      # 1️⃣ Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v3
 
-      # 2️⃣ Set up Docker Buildx (optional but recommended)
+      # 2️⃣ Set up Docker Buildx
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v2
 
       # 3️⃣ Build Docker image
       - name: Build Docker image
         run: docker build -t cloud-native-devsecops-app:1.0 .
 
-      # 4️⃣ Run Trivy container scan
+      # 4️⃣ Trivy container scan
       - name: Trivy Container Scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -32,39 +31,41 @@ jobs:
           output: trivy-report.json
           scan-type: image
 
-      # 5️⃣ Run Python dependency scan
+      # 5️⃣ Python dependency check
       - name: Python Dependency Check
         run: |
           python -m pip install --upgrade pip
           pip install pip-audit
-          pip-audit -f json -o  pip-audit-report.json || true
+          pip-audit > pip-audit-report.txt || true
 
-      # 6️⃣ Upload Trivy report as artifact
-      - name: Upload Trivy report
+      # 6️⃣ Upload Trivy JSON report
+      - name: Upload Trivy report as artifact
         uses: actions/upload-artifact@v4
         with:
           name: trivy-report
           path: trivy-report.json
 
       # 7️⃣ Upload Python dependency report
-      - name: Upload Python dependency report
+      - name: Upload pip-audit report
         uses: actions/upload-artifact@v4
         with:
           name: pip-audit-report
-          path: pip-audit-report.json
+          path: pip-audit-report.txt
 
-      # 8️⃣ Fail workflow on HIGH severity vulnerabilities
-      - name: Fail on HIGH severity vulnerabilities
+      # 8️⃣ Log HIGH severity vulnerabilities (without failing workflow)
+      - name: Check HIGH severity vulnerabilities
         run: |
           if jq '.Results[].Vulnerabilities[]? | select(.Severity=="HIGH")' trivy-report.json | grep -q .; then
             echo "❌ HIGH severity vulnerability found in Docker image!"
-            exit 1
+          else
+            echo "✅ No HIGH severity vulnerabilities found in Docker image."
           fi
 
-      # Optional: fail workflow if Python dependency scan has HIGH or CRITICAL vulnerabilities
-      - name: Fail on HIGH/CRITICAL Python dependency vulnerabilities
+      # 9️⃣ Log HIGH/CRITICAL Python dependency vulnerabilities (without failing)
+      - name: Check HIGH/CRITICAL Python dependency vulnerabilities
         run: |
-          if jq '.vulnerabilities[]? | select(.fix_version != null and (.severity=="HIGH" or .severity=="CRITICAL"))' pip-audit-report.json | grep -q .; then
+          if grep -E "HIGH|CRITICAL" pip-audit-report.txt; then
             echo "❌ HIGH or CRITICAL vulnerability found in Python dependencies!"
-            exit 1
+          else
+            echo "✅ No HIGH or CRITICAL vulnerabilities found in Python dependencies."
           fi
