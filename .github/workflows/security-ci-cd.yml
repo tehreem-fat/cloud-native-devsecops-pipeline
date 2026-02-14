@@ -1,0 +1,126 @@
+name: Security + CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-scan-deploy:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: cloud-native-devsecops-app
+      IMAGE_TAG: 1.0
+      DOCKER_REGISTRY: ghcr.io
+      DOCKER_REPO: ${{ github.repository }}
+
+    steps:
+      # 1️⃣ Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # 2️⃣ Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.12
+
+      # 3️⃣ Install dependencies for tests & linting
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 bandit pytest jinja2
+
+      # 4️⃣ Run Python tests
+      - name: Run tests
+        run: |
+          pytest --maxfail=1 --disable-warnings -q
+
+      # 5️⃣ Lint Python code
+      - name: Lint Python code
+        run: |
+          flake8 .
+          bandit -r .
+
+      # 6️⃣ Build Docker image
+      - name: Build Docker image
+        run: |
+          docker build -t $IMAGE_NAME:$IMAGE_TAG .
+
+      # 7️⃣ Trivy container scan (generate JSON + HTML)
+      - name: Trivy Container Scan
+        run: |
+          sudo trivy image -f json -o trivy-report.json $IMAGE_NAME:$IMAGE_TAG
+          sudo trivy image -f template --template "@contrib/html.tpl" -o trivy-report.html $IMAGE_NAME:$IMAGE_TAG
+
+      # 8️⃣ Python dependency scan (pip-audit HTML)
+      - name: Python Dependency Check
+        run: |
+          pip install pip-audit jinja2
+          pip-audit -f json -o pip-audit-report.json
+          # Convert JSON to simple HTML table
+          python3 - <<EOF
+import json, jinja2
+with open("pip-audit-report.json") as f:
+    data = json.load(f)
+template = """<html><body><h2>Python Dependencies Audit</h2><table border='1'>
+<tr><th>Package</th><th>Version</th><th>Severity</th><th>Fix Version</th></tr>
+{% for v in vulnerabilities %}
+<tr><td>{{v['name']}}</td><td>{{v['version']}}</td><td>{{v['severity']}}</td><td>{{v.get('fix_version','N/A')}}</td></tr>
+{% endfor %}
+</table></body></html>"""
+with open("pip-audit-report.html","w") as out:
+    out.write(jinja2.Template(template).render(vulnerabilities=data.get("vulnerabilities",[])))
+EOF
+
+      # 9️⃣ Upload reports as artifacts
+      - name: Upload Trivy report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.html
+
+      - name: Upload pip-audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: pip-audit-report.html
+
+      # 🔥 Fail workflow if high vulnerabilities
+      - name: Fail on HIGH severity Docker vulnerabilities
+        run: |
+          if jq '.Results[].Vulnerabilities[]? | select(.Severity=="HIGH")' trivy-report.json | grep -q .; then
+            echo "❌ HIGH severity vulnerability found in Docker image!"
+            exit 1
+          fi
+
+      - name: Fail on HIGH/CRITICAL Python dependencies
+        run: |
+          if jq '.vulnerabilities[]? | select(.severity=="HIGH" or .severity=="CRITICAL")' pip-audit-report.json | grep -q .; then
+            echo "❌ HIGH or CRITICAL vulnerability found in Python dependencies!"
+            exit 1
+          fi
+
+      # 🔄 Push Docker image to GitHub Container Registry if all checks pass
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: $DOCKER_REGISTRY
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Docker image
+        run: |
+          docker tag $IMAGE_NAME:$IMAGE_TAG $DOCKER_REGISTRY/$DOCKER_REPO:$IMAGE_TAG
+          docker push $DOCKER_REGISTRY/$DOCKER_REPO:$IMAGE_TAG
+
+      # 1️⃣4️⃣ Post PR comment with clickable report links
+      - name: Comment report links on PR
+        if: github.event_name == 'pull_request'
+        run: |
+          COMMENT="### 🛡 Security Scan Reports\n"
+          COMMENT+="- [Trivy Report HTML](https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts/$(jq -r '.Results[0].Vulnerabilities | length' trivy-report.json)/trivy-report.html)\n"
+          COMMENT+="- [pip-audit Report HTML](https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts/$(jq -r '.vulnerabilities | length' pip-audit-report.json)/pip-audit-report.html)\n"
+          gh pr comment ${{ github.event.pull_request.number }} --body "$COMMENT"
