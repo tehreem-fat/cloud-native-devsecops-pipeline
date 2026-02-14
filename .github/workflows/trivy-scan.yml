@@ -7,18 +7,23 @@ on:
     branches: [ main ]
 
 jobs:
-  trivy-scan:
+  security-scan:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
+      # 1️⃣ Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v3
 
+      # 2️⃣ Set up Docker Buildx (optional but recommended)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
+      # 3️⃣ Build Docker image
       - name: Build Docker image
         run: docker build -t cloud-native-devsecops-app:1.0 .
 
+      # 4️⃣ Run Trivy container scan
       - name: Trivy Container Scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -27,21 +32,39 @@ jobs:
           output: trivy-report.json
           scan-type: image
 
-      # ✅ Add this AFTER the Trivy scan
+      # 5️⃣ Run Python dependency scan
       - name: Python Dependency Check
         run: |
           python -m pip install --upgrade pip
           pip install pip-audit
           pip-audit --json > pip-audit-report.json
 
-      - name: Upload Trivy report as artifact
+      # 6️⃣ Upload Trivy report as artifact
+      - name: Upload Trivy report
         uses: actions/upload-artifact@v3
         with:
           name: trivy-report
           path: trivy-report.json
 
+      # 7️⃣ Upload Python dependency report
       - name: Upload Python dependency report
         uses: actions/upload-artifact@v3
         with:
           name: pip-audit-report
           path: pip-audit-report.json
+
+      # 8️⃣ Fail workflow on HIGH severity vulnerabilities
+      - name: Fail on HIGH severity vulnerabilities
+        run: |
+          if jq '.Results[].Vulnerabilities[]? | select(.Severity=="HIGH")' trivy-report.json | grep -q .; then
+            echo "❌ HIGH severity vulnerability found in Docker image!"
+            exit 1
+          fi
+
+      # Optional: fail workflow if Python dependency scan has HIGH or CRITICAL vulnerabilities
+      - name: Fail on HIGH/CRITICAL Python dependency vulnerabilities
+        run: |
+          if jq '.vulnerabilities[]? | select(.fix_version != null and (.severity=="HIGH" or .severity=="CRITICAL"))' pip-audit-report.json | grep -q .; then
+            echo "❌ HIGH or CRITICAL vulnerability found in Python dependencies!"
+            exit 1
+          fi
