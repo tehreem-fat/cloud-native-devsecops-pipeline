@@ -1,0 +1,47 @@
+name: Trivy Security Scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  trivy-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build Docker image
+        run: docker build -t cloud-native-devsecops-app:1.0 .
+
+      - name: Trivy Container Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: cloud-native-devsecops-app:1.0
+          format: json
+          output: trivy-report.json
+          scan-type: image
+
+      # ✅ Add this AFTER the Trivy scan
+      - name: Python Dependency Check
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+          pip-audit --json > pip-audit-report.json
+
+      - name: Upload Trivy report as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: trivy-report
+          path: trivy-report.json
+
+      - name: Upload Python dependency report
+        uses: actions/upload-artifact@v3
+        with:
+          name: pip-audit-report
+          path: pip-audit-report.json
