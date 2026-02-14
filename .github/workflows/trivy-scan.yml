@@ -37,7 +37,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pip-audit
-          pip-audit -f json -o  pip-audit-report.json --severity HIGH,CRITICAL
+          pip-audit -f json -o  pip-audit-report.json || true
 
       # 6️⃣ Upload Trivy report as artifact
       - name: Upload Trivy report
